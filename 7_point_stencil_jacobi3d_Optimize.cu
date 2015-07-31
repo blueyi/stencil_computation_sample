@@ -90,13 +90,8 @@ __global__ void kernel(double *dev_grid_in, double *dev_grid_out)
    cache[cacheIndex] = (center + up + down + west + east + south + north) * (1.0 / 7.0);
    __syncthreads();
 
-   //使用线程索引为0的线程将SM中的数据复制到全局内存
-   //此处可以设法优化为一次性执行
-   if (cacheIndex == 0) {
-      for (int i=0; i<blockDim.x * blockDim.y * blockDim.z; ++i) {
-         dev_grid_out[offset(x, y, z)] = cache[i];
-      }
-   }
+   //显然此处没有加速效果
+   dev_grid_out[offset(x, y, z)] = cache[cacheIndex];
 }
 
 //初始化输入，输出
