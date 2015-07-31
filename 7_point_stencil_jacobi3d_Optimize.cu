@@ -19,7 +19,7 @@ const int threadPerBlock = 32;
 const int times = 10;
 
 //设置stencil边界处邻居的值
-__device__ const float BORDER = 0.0;
+__device__ const double BORDER = 0.0;
 
 int count = 0;
 
@@ -65,7 +65,13 @@ __device__ __host__ int offset(int x, int y, int z)
 
 __global__ void kernel(double *dev_grid_in, double *dev_grid_out)
 {
-//   __shared__ double cache[threadPerBlock][threadPerBlock][1];
+   //使用shared memory存储每个线程块中的计算
+   __shared__ double cache[threadPerBlock * threadPerBlock * 1];
+   int cacheIndex = threadIdx.x * threadIdx.y * threadIdx.z;
+   cache[cacheIndex] = 0.0;
+   __syncthreads();
+
+   //线程索引
    int x = threadIdx.x + blockIdx.x * blockDim.x;
    int y = threadIdx.y + blockIdx.y * blockDim.y;
    int z = threadIdx.z + blockIdx.z * blockDim.z;
@@ -80,11 +86,17 @@ __global__ void kernel(double *dev_grid_in, double *dev_grid_out)
    double north  = (y < (dimY - 1)) ? dev_grid_in[offset(x, y + 1, z)] : BORDER;
 
    //    dev_grid_out[offset(x, y, z)] = 1.0;
-   dev_grid_out[offset(x, y, z)] = (center + up + down + west + east + south + north) * (1.0 / 7.0);
-//   cache[threadIdx.x][threadIdx.y][threadIdx.z] = (center + up + down + west + east + south + north) * (1.0 / 7.0);
-//   __syncthreads();
-//   dev_grid_out[offset(x, y, z)] = [threadIdx.x][threadIdx.y][threadIdx.z];
+//   dev_grid_out[offset(x, y, z)] = (center + up + down + west + east + south + north) * (1.0 / 7.0);
+   cache[cacheIndex] = (center + up + down + west + east + south + north) * (1.0 / 7.0);
+   __syncthreads();
 
+   //使用线程索引为0的线程将SM中的数据复制到全局内存
+   //此处可以设法优化为一次性执行
+   if (cacheIndex == 0) {
+      for (int i=0; i<blockDim.x * blockDim.y * blockDim.z; ++i) {
+         dev_grid_out[offset(x, y, z)] = cache[i];
+      }
+   }
 }
 
 //初始化输入，输出
@@ -191,7 +203,6 @@ int main(void)
    free(grid_out);
    CHECK_ERROR(cudaFree(dev_grid_in));
    CHECK_ERROR(cudaFree(dev_grid_out));
-   getchar();
    return 0;
 }
 
