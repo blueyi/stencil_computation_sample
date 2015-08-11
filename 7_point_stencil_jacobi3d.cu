@@ -16,7 +16,7 @@ const int SIZE = dimX * dimY * dimZ;
 const int threadPerBlock = 32;
 
 //设置迭代次数
-const int times = 10;
+const int times = 90;
 
 //设置stencil边界处邻居的值
 __device__ const float BORDER = 0.0;
@@ -83,7 +83,7 @@ __global__ void kernel(double *dev_grid_in, double *dev_grid_out)
    dev_grid_out[offset(x, y, z)] = (center + up + down + west + east + south + north) * (1.0 / 7.0);
 //   cache[threadIdx.x][threadIdx.y][threadIdx.z] = (center + up + down + west + east + south + north) * (1.0 / 7.0);
 //   __syncthreads();
-//   dev_grid_out[offset(x, y, z)] = [threadIdx.x][threadIdx.y][threadIdx.z];
+//   dev_grid_out[offset(x, y, z)] = cache[threadIdx.x][threadIdx.y][threadIdx.z];
 
 }
 

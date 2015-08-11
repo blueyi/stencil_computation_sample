@@ -4,6 +4,11 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
+/*
+对于本机GTX850M来说，当Threads Per Block = 1024，registers per thread = 32, shared memory per
+ blocks(bytes)=1024时可以获得最佳性能。
+*/
+
 // #define imin(a, b) (a<b?a:b)
 
 //定义X,Y,Z各维的长度
@@ -13,10 +18,10 @@ const int dimZ = 10;
 const int SIZE = dimX * dimY * dimZ;
 
 //设置每个线程块中线程数量，此处设置三维一样
-const int threadPerBlock = 32;
+const int threadPerBlock = 10;
 
 //设置迭代次数
-const int times = 10;
+const int times = 90;
 
 //设置stencil边界处邻居的值
 __device__ const double BORDER = 0.0;
@@ -56,8 +61,38 @@ inline void checkCudaState(const char *msg, const char *file, const int line)
    }
 }
 
+void print_device(const int id)
+{
+   cudaDeviceProp props;
+   cudaGetDeviceProperties(&props, id);
+   std::cout << "---Property of currently device used---" << std::endl;
+   std::cout  << "Device " << id <<  ": " << props.name << std::endl;
+   std::cout  << "CUDA Capability: " << props.major << "." << props.minor << std::endl;
+}
 
-//计算线程与元素的唯一偏移，以x为行，y为列，z为高
+//选择multiprocessor最多的CUDA设备
+void setCudaDevice(int id)
+{
+   int numDevices = 0;
+   cudaGetDeviceCount(&numDevices);
+   if (numDevices > 1) {
+      cudaDeviceProp props;
+      cudaGetDeviceProperties(&props, id);
+      int maxMultiProcessors = props.multiProcessorCount;
+      for (int device=1; device<numDevices; ++device) {
+         cudaGetDeviceProperties(&props, device);
+         if (maxMultiProcessors < props.multiProcessorCount) {
+            maxMultiProcessors = props.multiProcessorCount;
+            id = device;
+         }
+      }
+   }
+   CHECK_ERROR(cudaSetDevice(id));
+   print_device(id);
+}
+
+
+//计算元素的唯一线性偏移，以x为行，y为列，z为高
 __device__ __host__ int offset(int x, int y, int z) 
 {
    return (((x + dimX) % dimX) + ((y + dimY) % dimY) * dimX + ((z + dimZ) % dimZ) * dimX * dimY);
@@ -65,33 +100,44 @@ __device__ __host__ int offset(int x, int y, int z)
 
 __global__ void kernel(double *dev_grid_in, double *dev_grid_out)
 {
-   //使用shared memory存储每个线程块中的计算
-   __shared__ double cache[threadPerBlock * threadPerBlock * 1];
-   int cacheIndex = threadIdx.x * threadIdx.y * threadIdx.z;
-   cache[cacheIndex] = 0.0;
-   __syncthreads();
-
    //线程索引
    int x = threadIdx.x + blockIdx.x * blockDim.x;
    int y = threadIdx.y + blockIdx.y * blockDim.y;
    int z = threadIdx.z + blockIdx.z * blockDim.z;
 
-   //设置stencil中各元素值
-   double center = dev_grid_in[offset(x, y, z)];
-   double up     = (z < (dimZ - 1)) ? dev_grid_in[offset(x, y, z + 1)] : BORDER;
-   double down   = (z > 0) ? dev_grid_in[offset(x, y, z - 1)] : BORDER;
-   double west   = (x > 0) ? dev_grid_in[offset(x - 1, y, z)] : BORDER;
-   double east   = (x < (dimX - 1)) ? dev_grid_in[offset(x + 1, y, z)] : BORDER;
-   double south  = (y > 0) ? dev_grid_in[offset(x, y - 1, z)] : BORDER;
-   double north  = (y < (dimY - 1)) ? dev_grid_in[offset(x, y + 1, z)] : BORDER;
-
-   //    dev_grid_out[offset(x, y, z)] = 1.0;
-//   dev_grid_out[offset(x, y, z)] = (center + up + down + west + east + south + north) * (1.0 / 7.0);
-   cache[cacheIndex] = (center + up + down + west + east + south + north) * (1.0 / 7.0);
+   //使用shared memory存储输入
+   __shared__ double cache_in[threadPerBlock * threadPerBlock * threadPerBlock];
+   //使用同样的方法将线程块中的线程索引线性化
+   int cacheIndex = offset(threadIdx.x, threadIdx.y, threadIdx.z);
+   cache_in[cacheIndex] = 0.0;
+   __syncthreads();
+   cache_in[cacheIndex] = dev_grid_in[offset(x, y, z)];
    __syncthreads();
 
+   //可以考虑通过存储位置来减少register使用
+//   int center = offset(x, y, z);
+//   int up     = offset(x, y, z + 1);
+//   int down   = offset(x, y, z - 1);
+//   int west   = offset(x - 1, y, z);
+//   int east   = offset(x + 1, y, z);
+//   int south  = offset(x, y - 1, z);
+//   int north  = offset(x, y + 1, z);
+
+   //设置stencil中各元素值
+   double center = cache_in[offset(threadIdx.x, threadIdx.y, threadIdx.z)];
+   double up     = (threadIdx.z < (dimZ - 1)) ? cache_in[offset(threadIdx.x, threadIdx.y, threadIdx.z + 1)] : BORDER;
+   double down   = (threadIdx.z > 0) ? cache_in[offset(threadIdx.x, threadIdx.y, threadIdx.z - 1)] : BORDER;
+   double west   = (threadIdx.x > 0) ? cache_in[offset(threadIdx.x - 1, threadIdx.y, threadIdx.z)] : BORDER;
+   double east   = (threadIdx.x < (dimX - 1)) ? cache_in[offset(threadIdx.x + 1, threadIdx.y, threadIdx.z)] : BORDER;
+   double south  = (threadIdx.y > 0) ? cache_in[offset(threadIdx.x, threadIdx.y - 1, threadIdx.z)] : BORDER;
+   double north  = (threadIdx.y < (dimY - 1)) ? cache_in[offset(threadIdx.x, threadIdx.y + 1, threadIdx.z)] : BORDER;
+
+   dev_grid_out[offset(x, y, z)] = (center + up + down + west + east + south + north) * (1.0 / 7.0);
+//   cache[cacheIndex] = (center + up + down + west + east + south + north) * (1.0 / 7.0);
+//   __syncthreads();
+
    //显然此处没有加速效果
-   dev_grid_out[offset(x, y, z)] = cache[cacheIndex];
+//  dev_grid_out[offset(x, y, z)] = cache[cacheIndex];
 }
 
 //初始化输入，输出
@@ -101,10 +147,10 @@ void init(double *grid, int dimX, int dimY, int dimZ)
       for (int y=0; y<dimY; ++y) {
          for (int x=0; x<dimX; ++x) {
             if ((x*y*z == 0) || (x == dimX-1) || (y == dimY-1) || (z == dimZ-1)) {
-               grid[offset(x, y, z)] = 7;
+               grid[offset(x, y, z)] = 7.0;
             }
             else {
-               grid[offset(x, y, z)] = 0;
+               grid[offset(x, y, z)] = 0.0;
                //      grid[offset(x, y, z)] = count;
             }
             count++;
@@ -141,9 +187,10 @@ void debug(int test, std::string str)
 
 int main(void)
 {
-   CHECK_ERROR(cudaSetDevice(0));
-   //由于blocks不能大于1024，所以最后一维设备为1
-   dim3 blocks(threadPerBlock, threadPerBlock, 1);
+   setCudaDevice(0);
+   //此处有1000个数据，所以一共启动1000个线程，一个线程块，使一个线程对应一个数据
+   dim3 blocks(threadPerBlock, threadPerBlock, threadPerBlock);
+   //此处该方法会浪费大量线程，因为各维的线程块并不相等，导致有些线程块中会有很多空闲线程
    dim3 grids(blockPerGrid(dimX, blocks.x), blockPerGrid(dimY, blocks.y), blockPerGrid(dimZ, blocks.z));
 
    double *grid_in, *grid_out;
