@@ -3,9 +3,9 @@ Exercise code about stencil computation
 
 **Todo**
 
-~~1. 7-point 3D stencil for jacobi iterator~~  
-~~2. Geratate GPU elapsed time to measure performance ~~  
-3. Use shared memory to improve computation performance  
+~~1. 7-point 3D stencil for jacobi iterator~~   
+~~2. Geratate GPU elapsed time to measure performance~~   
+~~3. Use shared memory to improve computation performance~~  
 4. Use constant memory    
 5. Use 3D texture memory to implement 3D stencil   
 6. Attempt to use more than one stream to compute stencil  
