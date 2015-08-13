@@ -1,13 +1,18 @@
 ﻿#include <iostream>
 #include <string>
+//格式化输入输出
 #include <iomanip>
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
+//通过文件进行数据的输入输出
+#include <fstream>
+// 使用字符串流读取文件中的数据
+#include <sstream>
 
 /*
-对于本机GTX850M来说，当Threads Per Block = 1024，registers per thread = 32, shared memory per
- blocks(bytes)=1024时可以获得最佳性能。
-*/
+   对于本机GTX850M来说，当Threads Per Block = 1024，registers per thread = 32, shared memory per
+   blocks(bytes)=1024时可以获得最佳性能。
+ */
 
 // #define imin(a, b) (a<b?a:b)
 
@@ -26,7 +31,21 @@ const int times = 90;
 //设置stencil边界处邻居的值
 __device__ const double BORDER = 0.0;
 
+//生成递增的输入数据
 int count = 0;
+
+void debug(int test, std::string str)
+{
+
+   if (test != 0) {
+      std::cout << "-----------" << str  << "--------------" << std::endl;
+      std::cout << test << std::endl;
+   }
+   else {
+      std::cout << "-----------" << str  << "--------------" << std::endl;
+   }
+}
+
 
 
 //设定线程格中线程块的数量, 避免启动过多线程块
@@ -51,6 +70,7 @@ inline void checkCudaError(cudaError_t error, const char *file, const int line)
       exit(EXIT_FAILURE);
    }
 }
+
 inline void checkCudaState(const char *msg, const char *file, const int line)
 {
    cudaError_t error = cudaGetLastError();
@@ -61,6 +81,7 @@ inline void checkCudaState(const char *msg, const char *file, const int line)
    }
 }
 
+//输出当前使用的设备属性
 void print_device(const int id)
 {
    cudaDeviceProp props;
@@ -91,7 +112,6 @@ void setCudaDevice(int id)
    print_device(id);
 }
 
-
 //计算元素的唯一线性偏移，以x为行，y为列，z为高
 __device__ __host__ int offset(int x, int y, int z) 
 {
@@ -115,13 +135,13 @@ __global__ void kernel(double *dev_grid_in, double *dev_grid_out)
    __syncthreads();
 
    //可以考虑通过存储位置来减少register使用
-//   int center = offset(x, y, z);
-//   int up     = offset(x, y, z + 1);
-//   int down   = offset(x, y, z - 1);
-//   int west   = offset(x - 1, y, z);
-//   int east   = offset(x + 1, y, z);
-//   int south  = offset(x, y - 1, z);
-//   int north  = offset(x, y + 1, z);
+   //   int center = offset(x, y, z);
+   //   int up     = offset(x, y, z + 1);
+   //   int down   = offset(x, y, z - 1);
+   //   int west   = offset(x - 1, y, z);
+   //   int east   = offset(x + 1, y, z);
+   //   int south  = offset(x, y - 1, z);
+   //   int north  = offset(x, y + 1, z);
 
    //设置stencil中各元素值
    double center = cache_in[offset(threadIdx.x, threadIdx.y, threadIdx.z)];
@@ -133,11 +153,6 @@ __global__ void kernel(double *dev_grid_in, double *dev_grid_out)
    double north  = (threadIdx.y < (dimY - 1)) ? cache_in[offset(threadIdx.x, threadIdx.y + 1, threadIdx.z)] : BORDER;
 
    dev_grid_out[offset(x, y, z)] = (center + up + down + west + east + south + north) * (1.0 / 7.0);
-//   cache[cacheIndex] = (center + up + down + west + east + south + north) * (1.0 / 7.0);
-//   __syncthreads();
-
-   //显然此处没有加速效果
-//  dev_grid_out[offset(x, y, z)] = cache[cacheIndex];
 }
 
 //初始化输入，输出
@@ -159,6 +174,7 @@ void init(double *grid, int dimX, int dimY, int dimZ)
    }
 }
 
+//显示结果
 void print(double *grid)
 {
    for (int z=0; z<dimZ; ++z) {
@@ -173,16 +189,74 @@ void print(double *grid)
    }
 }
 
-void debug(int test, std::string str)
+//将数据写入到文件
+void outFile(double *grid)
 {
-
-   if (test != 0) {
-      std::cout << "-----------" << str  << "--------------" << std::endl;
-      std::cout << test << std::endl;
+   unsigned int data_count = 0;
+   std::string file_name = "out.txt";
+   std::fstream ofile(file_name.c_str(), std::fstream::out);
+   if (!ofile){
+      std::cout << "Error to open output file: "  << file_name << std::endl;
    }
    else {
-      std::cout << "-----------" << str  << "--------------" << std::endl;
+      for (int z=0; z<dimZ; ++z) {
+         ofile << z << ":\n";
+         for (int y=0; y<dimY; ++y) {
+            for (int x=0; x<dimX; ++x) {
+               ofile << std::fixed << std::setprecision(3) << grid[offset(x, y, z)] << "\t";
+               data_count++;
+            }
+            ofile << std::endl;
+         }
+         ofile << std::endl;
+      }
    }
+   ofile.close();
+   if (data_count == SIZE) {
+      std::cout << "Output " << data_count << " Data Successfully" << std::endl;
+   }
+   else {
+      std::cout << "Error, Output " << data_count << " Data" << std::endl;
+   }
+}
+
+//从文件中读取数据
+double * inFile(double *grid)
+{
+   unsigned int data_count = 0;
+   std::string file_name = "in.txt";
+   std::fstream ifile(file_name.c_str(), std::fstream::in);
+   if (!ifile){
+      std::cout << "Error to open output file: "  << file_name << std::endl;
+   }
+   else {
+      std::string str;
+      std::istringstream stream;
+      for (int z=0; z<dimZ; ++z) {
+         for (int y=0; y<dimY; ++y) {
+            getline(ifile, str);
+            //跳过空行
+            while (str.empty()) {
+               getline(ifile, str);
+            }
+            stream.str(str);
+            for (int x=0; x<dimX && !stream.eof(); ++x) {
+               stream >> grid[offset(x, y, z)];
+               data_count++;
+            }
+            stream.clear();
+            stream.sync();
+         }
+      }
+   }
+   ifile.close();
+   if (data_count == SIZE) {
+      std::cout << "Input " << data_count << " Data Successfully" << std::endl;
+   }
+   else {
+      std::cout << "Error, Input " << data_count << " Data" << std::endl;
+   }
+   return grid;
 }
 
 int main(void)
@@ -201,11 +275,13 @@ int main(void)
    CHECK_ERROR(cudaMalloc((void**)&dev_grid_in, SIZE * sizeof(double)));
    CHECK_ERROR(cudaMalloc((void**)&dev_grid_out, SIZE * sizeof(double)));
 
-   init(grid_in, dimX, dimY, dimZ);
-   init(grid_out, dimX, dimY, dimZ);
+   //初始化输入输出
+   //   init(grid_in, dimX, dimY, dimZ);
+   //   init(grid_out, dimX, dimY, dimZ);
+   inFile(grid_in);
 
-//   debug(0, "input");
-//   print(grid_in);
+   //   debug(0, "input");
+   //   print(grid_in);
 
    //统计用于GPU计算的时间
    cudaEvent_t start, stop;
@@ -233,8 +309,9 @@ int main(void)
    float elapsedTime;
    CHECK_ERROR(cudaEventElapsedTime(&elapsedTime, start, stop));
 
-   debug(0, "output");
-   print(grid_in);
+   //   debug(0, "output");
+   //   print(grid_in);
+   outFile(grid_in);
 
    std::cout << "Time elapsed: " << std::fixed << std::setprecision(6) << elapsedTime << " ms"  << std::endl;
 
